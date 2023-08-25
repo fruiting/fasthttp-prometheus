@@ -11,18 +11,22 @@ import (
 )
 
 const (
+	// every metric name part
 	requests string = "requests"
+	// metric type
+	metricTypeTotal string = "total"
+	// metric type
+	metricTypeFailure string = "failure_total"
+)
 
-	metricTypeTotal   string = "total"
-	metricTypeFailure string = "failure"
-
-	// byte for "-" symbol
+const (
+	// byte for symbol "-"
 	dashByte uint8 = 45
-	// byte for "/" symbol
+	// byte for symbol "/"
 	slashByte uint8 = 47
-	// byte for ":" symbol
+	// byte for symbol ":"
 	colonByte uint8 = 58
-	// byte for "_" symbol
+	// byte for symbol "_"
 	underlineByte uint8 = 95
 )
 
@@ -31,7 +35,12 @@ var (
 )
 
 func processMetricName(path string, metricName *string) {
-	if path[0] == colonByte {
+	if path[1] == colonByte {
+		if path[len(path)-1] == slashByte {
+			*metricName = *metricName + "_" + path[2:len(path)-1] + "_var"
+		} else {
+			*metricName = *metricName + "_" + path[2:] + "_var"
+		}
 		return
 	}
 
@@ -43,6 +52,13 @@ func processMetricName(path string, metricName *string) {
 		}
 
 		bytes[i] = path[i]
+	}
+
+	if bytes[0] == slashByte {
+		bytes = bytes[1:]
+	}
+	if bytes[len(bytes)-1] == slashByte {
+		bytes = bytes[:len(bytes)-1]
 	}
 
 	if len(*metricName) == 0 {
@@ -111,44 +127,54 @@ func (h *handler) DELETE(path string, handle fasthttp.RequestHandler) {
 func (h *handler) putMethod(path, httpMethod string) {
 	defer func() {
 		if r := recover(); r != nil {
-			h.logger.Error("fasthttp-prometheus recovered from panic", zap.Any("error", r))
+			h.logger.Error(
+				"libfasthttp-prometheus recovered from panic",
+				zap.String("panic_msg", fmt.Sprintf("%v", r)),
+			)
 		}
 	}()
 
-	trees := h.trie
-	root := trees[httpMethod]
-	if root == nil {
+	root, ok := h.trie[httpMethod]
+	if !ok {
 		root = new(node)
-		trees[httpMethod] = root
+		h.trie[httpMethod] = root
 	}
 
 	var metricName string
 	leaf := root.addPath(path, &metricName)
-	h.setMetrics(leaf, httpMethod, metricName)
+	h.setMetrics(
+		leaf,
+		h.createMetric(metricName, httpMethod, metricTypeTotal),
+		h.createMetric(metricName, httpMethod, metricTypeFailure),
+	)
 }
 
-func (h *handler) setMetrics(leaf *node, httpMethod, metricName string) {
-	metrics := [2]prometheus.Counter{
-		prometheus.NewCounter(prometheus.CounterOpts{
-			Name:      fmt.Sprintf("%s_%s_%s", metricName, requests, metricTypeTotal),
-			Namespace: h.service,
-			ConstLabels: prometheus.Labels{
-				"http_method": httpMethod,
-			},
-		}),
-		prometheus.NewCounter(prometheus.CounterOpts{
-			Name:      fmt.Sprintf("%s_%s_%s", metricName, requests, metricTypeFailure),
-			Namespace: h.service,
-			ConstLabels: prometheus.Labels{
-				"http_method": httpMethod,
-			},
-		}),
+func (h *handler) createMetric(metricName, httpMethod, metricType string) prometheus.Counter {
+	return prometheus.NewCounter(prometheus.CounterOpts{
+		Name:      fmt.Sprintf("%s_%s_%s", metricName, requests, metricType),
+		Namespace: h.service,
+		ConstLabels: prometheus.Labels{
+			"http_method": httpMethod,
+		},
+	})
+}
+
+func (h *handler) setMetrics(leaf *node, metricTotal, metricFailure prometheus.Counter) {
+	leaf.metrics = map[string]prometheus.Counter{
+		metricTypeTotal:   metricTotal,
+		metricTypeFailure: metricFailure,
 	}
 
-	prometheus.MustRegister(metrics[0], metrics[1])
-	leaf.metrics = map[string]prometheus.Counter{
-		metricTypeTotal:   metrics[0],
-		metricTypeFailure: metrics[1],
+	err := prometheus.Register(metricTotal)
+	if err != nil {
+		h.logger.Warn("can't register total metric", zap.Error(err))
+
+		return
+	}
+
+	err = prometheus.Register(metricFailure)
+	if err != nil {
+		h.logger.Warn("can't register failure metric", zap.Error(err))
 	}
 }
 
@@ -162,12 +188,6 @@ func (h *handler) libHandler(ctx *fasthttp.RequestCtx) {
 
 	leaf := root.getLeaf(string(ctx.URI().Path()))
 	if leaf == nil {
-		h.logger.Error(
-			"can't find leaf for path",
-			zap.ByteString("path", ctx.URI().Path()),
-			zap.ByteString("http_method", ctx.Method()),
-		)
-
 		return
 	}
 
@@ -178,12 +198,12 @@ func (h *handler) libHandler(ctx *fasthttp.RequestCtx) {
 			zap.ByteString("path", ctx.URI().Path()),
 			zap.ByteString("http_method", ctx.Method()),
 			zap.String("metric_type", metricTypeTotal),
-			zap.Any("metrics", leaf.metrics),
 		)
 
 		return
 	}
 
+	// if status_code >= 400 it will be marked as error and increment fail metric
 	if ctx.Response.StatusCode() >= fasthttp.StatusBadRequest {
 		err = h.inc(leaf.metrics, metricTypeFailure)
 		if err != nil {
@@ -192,7 +212,6 @@ func (h *handler) libHandler(ctx *fasthttp.RequestCtx) {
 				zap.ByteString("path", ctx.URI().Path()),
 				zap.ByteString("http_method", ctx.Method()),
 				zap.String("metric_type", metricTypeFailure),
-				zap.Any("metrics", leaf.metrics),
 			)
 
 			return

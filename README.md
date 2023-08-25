@@ -3,7 +3,7 @@ Prometheus metrics exporter for fasthttp. On every method creates two metrics: t
 For example you want to register path `/user/:id/some-method` in your fasthttp server.
 Library will create metrics based on [OpenMetrics](https://github.com/OpenObservability/OpenMetrics/tree/main):
 1. `{prefix}_user_some_method_requests_total`
-2. `{prefix}_user_some_method_requests_failure`
+2. `{prefix}_user_some_method_requests_failure_total`
 
 ## Installation
 ```
@@ -38,11 +38,6 @@ and 9600-10000 ns/op if fasthttp is wrapped by this library.
 1. Run unit tests `go test ./...`
 2. Run benchmarks `go test -bench=.`
 3. Push, make pull request
-
-## Related Projects
-* [fasthttprouter](https://github.com/buaazp/fasthttprouter)
-* [fasthttp](https://github.com/valyala/fasthttp)
-* [zap](https://github.com/uber-go/zap)
 
 ## Licence
 [MIT](https://github.com/fruiting/fasthttp-prometheus/blob/master/LICENSE)
